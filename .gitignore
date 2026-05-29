@@ -1,0 +1,49 @@
+# ─── Dependencies ────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ─── Build output ─────────────────────────────────────────────
+dist/
+build/
+app/web/dist/
+server/etc/dist/
+
+# ─── Environment & Secrets ────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Storage (uploaded files) ─────────────────────────────────
+storage/Dokumen/*
+storage/Gambar/*
+storage/Video/*
+storage/Musik/*
+storage/docs/*
+# Keep folder structure
+!storage/Dokumen/.gitkeep
+!storage/Gambar/.gitkeep
+!storage/Video/.gitkeep
+!storage/Musik/.gitkeep
+
+# ─── Logs ─────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editor ───────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ─── TypeScript ───────────────────────────────────────────────
+*.tsbuildinfo
