@@ -10,7 +10,6 @@ app/web/dist/
 server/etc/dist/
 
 # ─── Environment & Secrets ────────────────────────────────────
-.env
 .env.local
 .env.*.local
 
