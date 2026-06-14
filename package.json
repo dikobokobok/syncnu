@@ -19,7 +19,7 @@
     "build:web": "npm run build --workspace=app/web",
     "build:server": "npm run build --workspace=server/etc",
     "build:desktop": "node scripts/build-desktop.js",
-    "build": "npm i && npm run dev"
+    "build": "chmod +x install.sh && ./install.sh"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
