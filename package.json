@@ -1,6 +1,6 @@
 {
   "name": "syncnu-monorepo",
-  "version": "1.0.0",
+  "version": "1.14.1",
   "description": "Syncnu Cloud Drive Monorepo",
   "private": true,
   "workspaces": [
@@ -18,7 +18,8 @@
     "start": "concurrently \"npm run start:web\" \"npm run start:server\"",
     "build:web": "npm run build --workspace=app/web",
     "build:server": "npm run build --workspace=server/etc",
-    "build": "npm run build:web && npm run build:server"
+    "build:desktop": "node scripts/build-desktop.js",
+    "build": "npm run build:web && npm run build:server && npm run build:desktop"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

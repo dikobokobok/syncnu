@@ -234,6 +234,55 @@ if [ -d "$SCRIPT_DIR/server/etc/dist" ]; then
   chmod +x "$SCRIPT_DIR/server/etc/dist/"* 2>/dev/null || true
 fi
 
+# ─────────────────────────────────────────────────────────────
+step "Setup systemd service (opsional — khusus server/Armbian)"
+# ─────────────────────────────────────────────────────────────
+
+SYSTEMD_AVAILABLE=false
+if command -v systemctl &>/dev/null; then
+  SYSTEMD_AVAILABLE=true
+fi
+
+if [ "$SYSTEMD_AVAILABLE" = true ]; then
+  echo ""
+  read -rp "  Apakah Anda ingin membuat systemd service agar Syncnu berjalan otomatis saat boot? (y/N): " SETUP_SERVICE
+  if [[ "$SETUP_SERVICE" =~ ^[Yy]$ ]]; then
+    SERVICE_FILE="/etc/systemd/system/syncnu.service"
+    WORKING_DIR="$SCRIPT_DIR"
+
+    info "Membuat systemd service file di $SERVICE_FILE ..."
+
+    sudo tee "$SERVICE_FILE" > /dev/null <<SVCEOF
+[Unit]
+Description=Syncnu Cloud Drive Storage
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$WORKING_DIR
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable syncnu.service
+    success "Service syncnu.service berhasil dibuat dan diaktifkan."
+    info "  Jalankan:  sudo systemctl start syncnu"
+    info "  Cek status: sudo systemctl status syncnu"
+    info "  Lihat log:  sudo journalctl -u syncnu -f"
+  else
+    info "Lewati pembuatan systemd service."
+  fi
+else
+  warn "systemctl tidak ditemukan. Lewati pembuatan systemd service."
+fi
+
 echo -e "\n  ${GREEN}✓ Memulai aplikasi...${RESET}"
 echo -e "  Tekan ${YELLOW}Ctrl+C${RESET} untuk menghentikan.\n"
 npm run dev

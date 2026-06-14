@@ -14,6 +14,7 @@
 DROP TABLE IF EXISTS files CASCADE;
 DROP TABLE IF EXISTS folders CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS shares CASCADE;
 
 
 -- ============================================================
@@ -131,3 +132,33 @@ INSERT INTO users (email, password, name) VALUES (
 --  CREATE POLICY "users_own_folders" ON folders
 --    FOR ALL USING (owner = auth.email() OR owner = 'system');
 -- ============================================================
+
+
+-- ============================================================
+--  BAGIAN 6: INDEKS KOMPOSIT UNTUK OPTIMASI PERFORMA
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_files_owner_deleted ON files(owner, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_files_folder_deleted ON files(folder_id, deleted_at);
+
+
+-- ============================================================
+--  BAGIAN 7: TABEL DAN INDEKS UNTUK SHARING (LINK & EMAIL)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS shares (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  file_id     UUID        REFERENCES files(id) ON DELETE CASCADE,
+  folder_id   UUID        REFERENCES folders(id) ON DELETE CASCADE,
+  shared_by   TEXT        NOT NULL,       -- email pengirim
+  shared_to   TEXT        DEFAULT NULL,   -- email penerima (null jika share via link)
+  token       TEXT        UNIQUE DEFAULT NULL, -- token untuk share via link
+  share_type  TEXT        NOT NULL,       -- 'link' atau 'email'
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_file_id ON shares(file_id);
+CREATE INDEX IF NOT EXISTS idx_shares_folder_id ON shares(folder_id);
+CREATE INDEX IF NOT EXISTS idx_shares_shared_to ON shares(shared_to);
+CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(token);
+

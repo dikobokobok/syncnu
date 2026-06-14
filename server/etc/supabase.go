@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type SupabaseClient struct {
@@ -29,10 +30,20 @@ func InitSupabase() {
 		fmt.Println("Warning: Supabase credentials missing. PostgREST database queries will fail.")
 	}
 
+	// Create custom Transport for connection pooling
+	tr := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
 	supabase = &SupabaseClient{
 		URL:            urlVal,
 		ServiceRoleKey: keyVal,
-		HTTPClient:     &http.Client{},
+		HTTPClient: &http.Client{
+			Transport: tr,
+			Timeout:   30 * time.Second,
+		},
 	}
 }
 

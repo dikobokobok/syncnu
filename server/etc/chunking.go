@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -229,6 +230,10 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer mergedFile.Close()
 
+	// Use buffered writer to speed up disk writes
+	bufWriter := bufio.NewWriter(mergedFile)
+	defer bufWriter.Flush()
+
 	// Append each chunk
 	for i := 0; i < totalChunks; i++ {
 		p := filepath.Join(tempDir, strconv.Itoa(i))
@@ -237,7 +242,7 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"error":"Failed to open chunk %d"}`, i), http.StatusInternalServerError)
 			return
 		}
-		_, err = io.Copy(mergedFile, cFile)
+		_, err = io.Copy(bufWriter, cFile)
 		cFile.Close()
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"Failed to merge chunk %d"}`, i), http.StatusInternalServerError)

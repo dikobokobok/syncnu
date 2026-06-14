@@ -141,15 +141,18 @@ func ValidateJWT(tokenStr string) (*JWTClaims, error) {
 	return nil, errors.New("invalid token")
 }
 
-// GetDirSize recursively calculates directory size in bytes
+// GetDirSize recursively calculates directory size in bytes using WalkDir (optimized)
 func GetDirSize(path string) int64 {
 	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if !info.IsDir() {
-			size += info.Size()
+		if !d.IsDir() {
+			info, err := d.Info()
+			if err == nil {
+				size += info.Size()
+			}
 		}
 		return nil
 	})

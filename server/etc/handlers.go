@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -584,4 +586,336 @@ func StorageStatsHandler(w http.ResponseWriter, r *http.Request) {
 		"freeFormatted":  fmtBytes(free),
 		"percent":        fmt.Sprintf("%.2f", percentVal),
 	})
+}
+
+// ─── Share Handlers ──────────────────────────────────────────────────────────
+
+type CreateShareReq struct {
+	FileID    string `json:"file_id"`
+	FolderID  string `json:"folder_id"`
+	ShareType string `json:"share_type"` // "link" or "email"
+	SharedTo  string `json:"shared_to"`  // recipient email
+}
+
+func getUserFromAuth(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", fmt.Errorf("token otorisasi tidak ditemukan")
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	claims, err := ValidateJWT(token)
+	if err != nil {
+		return "", err
+	}
+	return claims.Email, nil
+}
+
+func GenerateRandomToken(length int) string {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
+func CreateShareHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	email, err := getUserFromAuth(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+		return
+	}
+
+	var req CreateShareReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.FileID == "" && req.FolderID == "" {
+		http.Error(w, `{"error":"file_id or folder_id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.ShareType != "link" && req.ShareType != "email" {
+		http.Error(w, `{"error":"Invalid share_type"}`, http.StatusBadRequest)
+		return
+	}
+
+	var tokenVal *string
+	if req.ShareType == "link" {
+		t := GenerateRandomToken(16)
+		tokenVal = &t
+	}
+
+	var sharedToVal *string
+	if req.ShareType == "email" {
+		if req.SharedTo == "" {
+			http.Error(w, `{"error":"shared_to email is required for email shares"}`, http.StatusBadRequest)
+			return
+		}
+		st := strings.ToLower(req.SharedTo)
+		sharedToVal = &st
+	}
+
+	newShare := Share{
+		SharedBy:  email,
+		ShareType: req.ShareType,
+	}
+
+	if req.FileID != "" {
+		newShare.FileID = &req.FileID
+	}
+	if req.FolderID != "" {
+		newShare.FolderID = &req.FolderID
+	}
+	if tokenVal != nil {
+		newShare.Token = tokenVal
+	}
+	if sharedToVal != nil {
+		newShare.SharedTo = sharedToVal
+	}
+
+	var inserted []Share
+	err = supabase.Insert("shares", []Share{newShare}, &inserted)
+	if err != nil || len(inserted) == 0 {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(inserted[0])
+}
+
+func SharedWithMeHandler(w http.ResponseWriter, r *http.Request) {
+	email, err := getUserFromAuth(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+		return
+	}
+
+	var shares []Share
+	err = supabase.Select("shares", "*", map[string]string{
+		"shared_to": "eq." + strings.ToLower(email),
+	}, &shares)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	type SharedItem struct {
+		ShareID   string     `json:"share_id"`
+		ShareType string     `json:"share_type"`
+		SharedBy  string     `json:"shared_by"`
+		CreatedAt *time.Time `json:"created_at"`
+		Type      string     `json:"type"` // "file" or "folder"
+		File      *File      `json:"file,omitempty"`
+		Folder    *Folder    `json:"folder,omitempty"`
+		Files     []File     `json:"files,omitempty"` // If folder, files inside it
+	}
+
+	var items []SharedItem = []SharedItem{}
+
+	for _, s := range shares {
+		if s.FileID != nil {
+			var files []File
+			err = supabase.Select("files", "*", map[string]string{"id": "eq." + *s.FileID}, &files)
+			if err == nil && len(files) > 0 {
+				items = append(items, SharedItem{
+					ShareID:   s.ID,
+					ShareType: s.ShareType,
+					SharedBy:  s.SharedBy,
+					CreatedAt: s.CreatedAt,
+					Type:      "file",
+					File:      &files[0],
+				})
+			}
+		} else if s.FolderID != nil {
+			var folders []Folder
+			err = supabase.Select("folders", "*", map[string]string{"id": "eq." + *s.FolderID}, &folders)
+			if err == nil && len(folders) > 0 {
+				var folderFiles []File
+				supabase.Select("files", "*", map[string]string{
+					"folder_id":  "eq." + *s.FolderID,
+					"deleted_at": "is.null",
+				}, &folderFiles)
+				if folderFiles == nil {
+					folderFiles = []File{}
+				}
+				items = append(items, SharedItem{
+					ShareID:   s.ID,
+					ShareType: s.ShareType,
+					SharedBy:  s.SharedBy,
+					CreatedAt: s.CreatedAt,
+					Type:      "folder",
+					Folder:    &folders[0],
+					Files:     folderFiles,
+				})
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func GetPublicShareHandler(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	if token == "" {
+		http.Error(w, `{"error":"Token is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	var shares []Share
+	err := supabase.Select("shares", "*", map[string]string{
+		"token": "eq." + token,
+	}, &shares)
+
+	if err != nil || len(shares) == 0 {
+		http.Error(w, `{"error":"Share not found"}`, http.StatusNotFound)
+		return
+	}
+
+	share := shares[0]
+
+	type PublicShareResponse struct {
+		ShareID   string     `json:"share_id"`
+		SharedBy  string     `json:"shared_by"`
+		CreatedAt *time.Time `json:"created_at"`
+		Type      string     `json:"type"` // "file" or "folder"
+		File      *File      `json:"file,omitempty"`
+		Folder    *Folder    `json:"folder,omitempty"`
+		Files     []File     `json:"files,omitempty"` // If folder, files inside it
+	}
+
+	resp := PublicShareResponse{
+		ShareID:   share.ID,
+		SharedBy:  share.SharedBy,
+		CreatedAt: share.CreatedAt,
+	}
+
+	if share.FileID != nil {
+		var files []File
+		err = supabase.Select("files", "*", map[string]string{"id": "eq." + *share.FileID}, &files)
+		if err != nil || len(files) == 0 {
+			http.Error(w, `{"error":"File not found"}`, http.StatusNotFound)
+			return
+		}
+		resp.Type = "file"
+		resp.File = &files[0]
+	} else if share.FolderID != nil {
+		var folders []Folder
+		err = supabase.Select("folders", "*", map[string]string{"id": "eq." + *share.FolderID}, &folders)
+		if err != nil || len(folders) == 0 {
+			http.Error(w, `{"error":"Folder not found"}`, http.StatusNotFound)
+			return
+		}
+		resp.Type = "folder"
+		resp.Folder = &folders[0]
+
+		var folderFiles []File
+		err = supabase.Select("files", "*", map[string]string{
+			"folder_id":  "eq." + *share.FolderID,
+			"deleted_at": "is.null",
+		}, &folderFiles)
+		if err == nil {
+			resp.Files = folderFiles
+		} else {
+			resp.Files = []File{}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func GetSharesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	email, err := getUserFromAuth(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+		return
+	}
+
+	fileID := r.URL.Query().Get("file_id")
+	folderID := r.URL.Query().Get("folder_id")
+
+	if fileID == "" && folderID == "" {
+		http.Error(w, `{"error":"file_id or folder_id parameter is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	filters := map[string]string{
+		"shared_by": "eq." + email,
+	}
+	if fileID != "" {
+		filters["file_id"] = "eq." + fileID
+	} else {
+		filters["folder_id"] = "eq." + folderID
+	}
+
+	var shares []Share
+	err = supabase.Select("shares", "*", filters, &shares)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	if shares == nil {
+		shares = []Share{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(shares)
+}
+
+func DeleteShareHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	email, err := getUserFromAuth(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, `{"error":"Missing share ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	// First verify ownership of this share record
+	var shares []Share
+	err = supabase.Select("shares", "*", map[string]string{
+		"id":        "eq." + id,
+		"shared_by": "eq." + email,
+	}, &shares)
+	if err != nil || len(shares) == 0 {
+		http.Error(w, `{"error":"Share not found or access denied"}`, http.StatusNotFound)
+		return
+	}
+
+	var deleted []Share
+	err = supabase.Delete("shares", map[string]string{
+		"id": "eq." + id,
+	}, &deleted)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"success":true}`))
 }

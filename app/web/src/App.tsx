@@ -849,15 +849,7 @@ function LoginPage({
         </div>
 
         <div className="bg-[#1e293b] border border-[#334155] rounded-2xl p-8 shadow-2xl relative">
-          <button
-            type="button"
-            onClick={() => setShowSettings(true)}
-            className="absolute top-4 right-4 p-1.5 text-slate-500 hover:text-slate-300 hover:bg-white/5 rounded-lg transition"
-            title="Pengaturan IP Server"
-          >
-            <IconSettings />
-          </button>
-
+          
           {showSettings ? (
             <div>
               <h2 className="text-lg font-bold text-white mb-1 text-center">Pengaturan Server</h2>
@@ -980,6 +972,29 @@ export default function App() {
   const [isDragActive, setIsDragActive] = useState(false);
   const dragCounter = useRef(0);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+
+  // Share States
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareItem, setShareItem] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null);
+  const [shareEmail, setShareEmail] = useState('');
+  const [shareTab, setShareTab] = useState<'email' | 'link'>('email');
+  const [shareLink, setShareLink] = useState('');
+  const [isSharing, setIsSharing] = useState(false);
+  const [sharedItems, setSharedItems] = useState<any[]>([]);
+  const [isLoadingShared, setIsLoadingShared] = useState(false);
+  const [selectedSharedFolder, setSelectedSharedFolder] = useState<any | null>(null);
+  const [existingShares, setExistingShares] = useState<any[]>([]);
+  const [isLoadingExistingShares, setIsLoadingExistingShares] = useState(false);
+
+  // Public Share State
+  const [publicShareToken, setPublicShareToken] = useState<string | null>(() => {
+    const parts = window.location.pathname.split('/');
+    const shareIndex = parts.indexOf('share');
+    return shareIndex !== -1 && parts[shareIndex + 1] ? parts[shareIndex + 1] : null;
+  });
+  const [publicShareData, setPublicShareData] = useState<any>(null);
+  const [isLoadingPublicShare, setIsLoadingPublicShare] = useState(false);
+  const [publicShareError, setPublicShareError] = useState<string | null>(null);
 
   // Unified activity queue for all operations
   const [activityQueue, setActivityQueue] = useState<ActivityItem[]>([]);
@@ -1135,13 +1150,13 @@ export default function App() {
     if (!currentUser?.email || filesWithPaths.length === 0) return;
     setIsUploading(true);
 
-    // Buat queue items untuk unified activity queue
+    // Buat queue items untuk unified activity queue (semua mulai sebagai pending)
     const queueItems: ActivityItem[] = filesWithPaths.map((item, i) => ({
       id: `upload-${Date.now()}-${i}`,
       name: item.file.name,
       size: item.file.size,
       progress: 0,
-      status: 'active',
+      status: 'pending',
       op: 'upload' as ActivityOp,
     }));
 
@@ -1153,14 +1168,18 @@ export default function App() {
     const isFolderUpload = filesWithPaths.some(f => f.relativePath.includes('/'));
 
     let errorCount = 0;
+    const CONCURRENCY_LIMIT = 5;
+    let index = 0;
 
-    for (let i = 0; i < filesWithPaths.length; i++) {
-      const { file, relativePath } = filesWithPaths[i];
-      const queueId = queueItems[i].id;
+    const runNext = async (): Promise<void> => {
+      if (index >= filesWithPaths.length) return;
+      const currentIndex = index++;
+      const { file, relativePath } = filesWithPaths[currentIndex];
+      const queueId = queueItems[currentIndex].id;
 
-      // Set progress 0 saat mulai upload
+      // Set status ke active dan progress 0 saat mulai upload
       setActivityQueue(prev => prev.map(q =>
-        q.id === queueId ? { ...q, progress: 0 } : q
+        q.id === queueId ? { ...q, status: 'active', progress: 0 } : q
       ));
 
       try {
@@ -1174,7 +1193,7 @@ export default function App() {
           const chunk = file.slice(start, end);
 
           const formData = new FormData();
-          formData.append('chunk', chunk);
+          formData.append('chunk', chunk, file.name); // Kirim filename di Form Data
           formData.append('upload_id', uploadId);
           formData.append('chunk_index', chunkIndex.toString());
           formData.append('total_chunks', totalChunks.toString());
@@ -1192,11 +1211,10 @@ export default function App() {
           }
 
           await axios.post(`${BACKEND_URL}/api/upload-chunk`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
             onUploadProgress: (evt) => {
               const chunkUploaded = evt.total ? evt.loaded : 0;
               const totalUploaded = start + chunkUploaded;
-              const pct = Math.min(Math.round((totalUploaded / file.size) * 100), 99); // max 99% until server finishes merge
+              const pct = Math.min(Math.round((totalUploaded / file.size) * 100), 99); // max 99% sampai server menggabungkan chunk
               setActivityQueue(prev => prev.map(q =>
                 q.id === queueId ? { ...q, progress: pct } : q
               ));
@@ -1208,13 +1226,24 @@ export default function App() {
           q.id === queueId ? { ...q, status: 'done', progress: 100 } : q
         ));
       } catch (err: any) {
+        console.error('Upload failed:', err);
         const msg = err?.response?.data?.error || 'Gagal mengunggah';
         setActivityQueue(prev => prev.map(q =>
           q.id === queueId ? { ...q, status: 'error', errorMsg: msg } : q
         ));
         errorCount++;
       }
+
+      // Jalankan file berikutnya di queue
+      await runNext();
+    };
+
+    // Mulai worker upload secara paralel (maksimal 5)
+    const promises: Promise<void>[] = [];
+    for (let c = 0; c < Math.min(CONCURRENCY_LIMIT, filesWithPaths.length); c++) {
+      promises.push(runNext());
     }
+    await Promise.all(promises);
 
     // Refresh data setelah semua selesai
     fetchFiles();
@@ -1383,6 +1412,160 @@ export default function App() {
       // Fallback to calculating from files if endpoint fails
     }
   };
+
+  const fetchSharedItems = async (silent = false) => {
+    const token = getToken();
+    if (!token) return;
+    if (!silent) setIsLoadingShared(true);
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/shared`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setSharedItems(res.data);
+    } catch {
+      if (!silent) showToast('Gagal memuat file dibagikan.', 'error');
+    } finally {
+      if (!silent) setIsLoadingShared(false);
+    }
+  };
+
+  const fetchExistingShares = async (type: 'file' | 'folder', id: string) => {
+    const token = getToken();
+    if (!token) return;
+    setIsLoadingExistingShares(true);
+    try {
+      const url = `${BACKEND_URL}/api/shares?${type === 'file' ? 'file_id' : 'folder_id'}=${id}`;
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setExistingShares(res.data || []);
+    } catch (err) {
+      console.error('Error fetching shares:', err);
+    } finally {
+      setIsLoadingExistingShares(false);
+    }
+  };
+
+  const handleRevokeShare = async (shareId: string) => {
+    const token = getToken();
+    if (!token || !shareItem) return;
+    try {
+      await axios.delete(`${BACKEND_URL}/api/shares/${shareId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      showToast('Akses berhasil dihapus', 'success');
+      fetchExistingShares(shareItem.type, shareItem.id);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Gagal menghapus akses.';
+      showToast(msg, 'error');
+    }
+  };
+
+  const handleOpenShareModal = (type: 'file' | 'folder', id: string, name: string) => {
+    setShareItem({ type, id, name });
+    setShareEmail('');
+    setShareLink('');
+    setShareTab('email');
+    setExistingShares([]);
+    setShowShareModal(true);
+    fetchExistingShares(type, id);
+  };
+
+  const handleShareViaEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!shareItem || !shareEmail) return;
+    const token = getToken();
+    if (!token) return;
+    setIsSharing(true);
+    try {
+      await axios.post(`${BACKEND_URL}/api/shares`, {
+        file_id: shareItem.type === 'file' ? shareItem.id : '',
+        folder_id: shareItem.type === 'folder' ? shareItem.id : '',
+        share_type: 'email',
+        shared_to: shareEmail.trim()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      showToast(`Berhasil dibagikan ke ${shareEmail}`, 'success');
+      setShareEmail('');
+      fetchExistingShares(shareItem.type, shareItem.id);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Gagal membagikan.';
+      showToast(msg, 'error');
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const handleGenerateShareLink = async () => {
+    if (!shareItem) return;
+    const token = getToken();
+    if (!token) return;
+    setIsSharing(true);
+    try {
+      const res = await axios.post(`${BACKEND_URL}/api/shares`, {
+        file_id: shareItem.type === 'file' ? shareItem.id : '',
+        folder_id: shareItem.type === 'folder' ? shareItem.id : '',
+        share_type: 'link'
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const generatedLink = `${window.location.origin}/share/${res.data.token}`;
+      setShareLink(generatedLink);
+      showToast('Link berhasil dibuat', 'success');
+      fetchExistingShares(shareItem.type, shareItem.id);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Gagal membuat link.';
+      showToast(msg, 'error');
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const fetchPublicShareData = async () => {
+    if (!publicShareToken) return;
+    setIsLoadingPublicShare(true);
+    setPublicShareError(null);
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/shares/public/${publicShareToken}`);
+      setPublicShareData(res.data);
+    } catch (err: any) {
+      console.error(err);
+      setPublicShareError(err?.response?.data?.error || 'Link berbagi tidak valid atau telah kadaluarsa.');
+    } finally {
+      setIsLoadingPublicShare(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedSharedFolder) {
+      const updatedFolder = sharedItems.find(item => item.share_id === selectedSharedFolder.share_id);
+      if (updatedFolder) {
+        setSelectedSharedFolder(updatedFolder);
+      } else {
+        setSelectedSharedFolder(null);
+      }
+    }
+  }, [sharedItems]);
+
+  useEffect(() => {
+    if (publicShareToken) {
+      fetchPublicShareData();
+    }
+  }, [publicShareToken]);
+
+  useEffect(() => {
+    let interval: any;
+    if (activeNav === 'shared' && isAuthenticated && currentUser) {
+      fetchSharedItems(false);
+      interval = setInterval(() => {
+        fetchSharedItems(true);
+      }, 5000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [activeNav, isAuthenticated, currentUser]);
 
   useEffect(() => {
     // Cek token yang tersimpan di localStorage
@@ -1601,7 +1784,150 @@ export default function App() {
   const usedPct = Math.min((totalUsed / (storageStats?.total ?? (100 * 1024 * 1024 * 1024))) * 100, 100);
 
   const filteredFiles = files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const homeFiles = filteredFiles.slice(0, 20);
   const recentFiles = [...files].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 4);
+
+  if (publicShareToken) {
+    if (isLoadingPublicShare) {
+      return (
+        <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-4">
+          <div className="text-center">
+            <svg className="h-8 w-8 animate-spin text-blue-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <p className="text-sm text-slate-400 mt-3 font-semibold">Memuat halaman berbagi...</p>
+          </div>
+        </div>
+      );
+    }
+    if (publicShareError) {
+      return (
+        <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-4" style={{
+          backgroundImage: 'radial-gradient(ellipse at 50% 0%, rgba(59,130,246,0.12) 0%, transparent 60%)'
+        }}>
+          <div className="bg-[#1e293b] border border-[#334155] rounded-2xl p-8 shadow-2xl max-w-sm text-center">
+            <svg className="h-12 w-12 text-red-500/80 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+            <h2 className="text-lg font-bold text-white mb-2">Tautan Tidak Valid</h2>
+            <p className="text-xs text-slate-400 mb-6 font-medium leading-relaxed">{publicShareError}</p>
+            <button
+              onClick={() => {
+                setPublicShareToken(null);
+                window.history.replaceState({}, '', '/');
+              }}
+              className="px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-500 transition-all w-full shadow-lg shadow-blue-500/20"
+            >
+              Kembali ke Login
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (publicShareData) {
+      const isFile = publicShareData.type === 'file';
+      return (
+        <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-4" style={{
+          backgroundImage: 'radial-gradient(ellipse at 50% 0%, rgba(59,130,246,0.12) 0%, transparent 60%)'
+        }}>
+          <div className="w-full max-w-md">
+            {/* Logo */}
+            <div className="flex items-center gap-1.5 mb-8 justify-center">
+              <img src="/icon.png" alt="Syncnu" className="w-11 h-11 rounded-xl object-contain" />
+              <span className="font-bold text-xl text-white tracking-tight">Syncnu</span>
+            </div>
+
+            <div className="bg-[#1e293b] border border-[#334155] rounded-2xl p-8 shadow-2xl relative">
+              <h2 className="text-lg font-bold text-white mb-1 text-center">Unduh Berkas Bersama</h2>
+              <p className="text-xs text-slate-400 text-center mb-6 font-medium">Dibagikan oleh <span className="text-blue-400 font-semibold">{publicShareData.shared_by}</span></p>
+
+              {isFile ? (
+                <div className="space-y-6">
+                  {/* File preview */}
+                  <FilePreview file={publicShareData.file} backendUrl={BACKEND_URL} />
+                  
+                  {/* File Info */}
+                  <div className="bg-[#0f172a]/60 border border-[#334155]/60 rounded-xl p-4 flex justify-between items-center text-sm">
+                    <div className="min-w-0 flex-1 pr-4">
+                      <p className="font-semibold text-slate-200 truncate text-xs">{publicShareData.file.name}</p>
+                      <p className="text-[10px] text-slate-500 mt-1 font-medium">{formatBytes(publicShareData.file.size)} · {timeAgo(publicShareData.file.created_at)}</p>
+                    </div>
+                    <a
+                      href={`${BACKEND_URL}${publicShareData.file.path}`}
+                      download={publicShareData.file.name}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition-all shadow-lg shadow-blue-500/20 shrink-0"
+                    >
+                      Unduh
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="flex items-center gap-3 bg-[#0f172a]/40 border border-[#334155]/60 rounded-xl p-4">
+                    <IconFolder cls="h-10 w-10 text-blue-400/80 fill-current shrink-0" />
+                    <div>
+                      <p className="font-semibold text-slate-200 text-sm">{publicShareData.folder.name}</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-medium">{publicShareData.files?.length || 0} berkas</p>
+                    </div>
+                  </div>
+
+                  {/* Files inside folder */}
+                  <div className="bg-[#0f172a] rounded-xl border border-[#334155] overflow-hidden max-h-64 overflow-y-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider border-b border-[#334155]/60 bg-[#111827]/40">
+                          <th className="py-2.5 px-4">Nama</th>
+                          <th className="py-2.5 px-4 w-28 text-right">Ukuran</th>
+                          <th className="py-2.5 px-4 w-16" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#334155]/40 text-xs text-slate-300">
+                        {(publicShareData.files || []).map((file: any) => {
+                          const { label, bg } = getFileExtLabel(file.type, file.name);
+                          return (
+                            <tr key={file.id} className="hover:bg-[#1e293b]/50 transition-colors">
+                              <td className="py-2.5 px-4 flex items-center gap-2 min-w-0">
+                                <span className={`${bg} text-white rounded w-6 h-6 flex items-center justify-center text-[8px] font-bold shrink-0`}>{label}</span>
+                                <span className="truncate max-w-[140px] font-medium text-slate-200">{file.name}</span>
+                              </td>
+                              <td className="py-2.5 px-4 text-slate-400 text-right">{formatBytes(file.size)}</td>
+                              <td className="py-2.5 px-4 text-center">
+                                <a
+                                  href={`${BACKEND_URL}${file.path}`}
+                                  download={file.name}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-400 hover:text-blue-300 font-semibold"
+                                >
+                                  Unduh
+                                </a>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              
+              <div className="mt-8 pt-5 border-t border-[#334155] text-center">
+                <button
+                  onClick={() => {
+                    setPublicShareToken(null);
+                    window.history.replaceState({}, '', '/');
+                  }}
+                  className="text-xs text-slate-500 hover:text-blue-400 font-medium transition"
+                >
+                  Kembali ke Login
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+  }
 
   if (!isAuthenticated || !currentUser) return <LoginPage onLogin={handleLogin} onRegister={handleRegister} />;
 
@@ -1669,7 +1995,7 @@ export default function App() {
             <ul className="space-y-0.5">
               {([
                 { key: 'home', label: 'Beranda', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
-                { key: 'folders', label: 'Folder', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
+                { key: 'folders', label: 'My Drive', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
                 { key: 'recent', label: 'Terbaru', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
                 { key: 'shared', label: 'Dibagikan', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
                 { key: 'starred', label: 'Favorit', icon: <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} /></svg> },
@@ -1677,7 +2003,7 @@ export default function App() {
               ] as { key: ActiveNav; label: string; icon: React.ReactNode }[]).map(item => (
                 <li key={item.key}>
                   <button
-                    onClick={() => { setActiveNav(item.key); setSelectedFolder(null); setSelectedFileIds([]); }}
+                    onClick={() => { setActiveNav(item.key); setSelectedFolder(null); setSelectedSharedFolder(null); setSelectedFileIds([]); }}
                     className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition sidebar-item ${activeNav === item.key ? 'sidebar-item-active text-blue-400' : 'text-slate-400 hover:text-slate-200 hover:bg-[#1e293b]'}`}
                   >
                     {item.icon}{item.label}
@@ -1767,14 +2093,14 @@ export default function App() {
               <div>
                 {activeNav === 'folders' && selectedFolder ? (
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setSelectedFolder(null)} className="text-blue-400 hover:text-blue-300 text-sm font-medium transition">Folder</button>
+                    <button onClick={() => setSelectedFolder(null)} className="text-blue-400 hover:text-blue-300 text-sm font-medium transition">My Drive</button>
                     <span className="text-slate-600">/</span>
                     <h1 className="text-2xl font-bold text-white">{selectedFolder.name}</h1>
                   </div>
                 ) : (
                   <h1 className="text-2xl font-bold text-white">
                     {activeNav === 'home' && 'Beranda'}
-                    {activeNav === 'folders' && 'Folder'}
+                    {activeNav === 'folders' && 'My Drive'}
                     {activeNav === 'recent' && 'Terbaru'}
                     {activeNav === 'shared' && 'Dibagikan'}
                     {activeNav === 'starred' && 'Favorit'}
@@ -1786,15 +2112,7 @@ export default function App() {
                 <button onClick={() => { fetchFiles(); fetchFolders(); }} title="Refresh" className="p-2 text-slate-500 hover:text-slate-300 hover:bg-[#1e293b] border border-transparent hover:border-[#334155] rounded-lg transition">
                   <IconRefresh spin={isLoadingFiles} />
                 </button>
-                {activeNav === 'folders' && !selectedFolder && (
-                  <button
-                    onClick={() => setIsCreatingFolder(true)}
-                    className="flex items-center gap-1.5 px-4 py-2 border border-[#334155] text-slate-300 bg-[#1e293b] rounded-lg text-sm font-medium hover:border-blue-500/50 hover:text-blue-400 transition"
-                  >
-                    <IconPlus />Buat Folder
-                  </button>
-                )}
-                {(activeNav === 'home' || (activeNav === 'folders' && selectedFolder)) && (
+                {(activeNav === 'home' || activeNav === 'folders') && (
                   <div className="relative">
                     <button
                       onClick={() => setShowUploadMenu(v => !v)}
@@ -1885,6 +2203,158 @@ export default function App() {
                       <button type="submit" className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 transition">Buat</button>
                     </div>
                   </form>
+                </div>
+              </div>
+            )}
+
+            {/* Share modal */}
+            {showShareModal && shareItem && (
+              <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-[#1e293b] border border-[#334155] rounded-2xl shadow-2xl p-6 w-full max-w-md relative flex flex-col gap-4">
+                  <button onClick={() => setShowShareModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-200 transition">
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+
+                  <div>
+                    <h3 className="font-semibold text-white mb-2 flex items-center gap-2 text-lg">
+                      <svg className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 10.742l4.673-2.337m0 5.186l-4.673-2.337m0 0A3.978 3.978 0 1112 12a3.978 3.978 0 01-3.316-1.576z" /></svg>
+                      Bagikan {shareItem.type === 'file' ? 'Berkas' : 'Folder'}
+                    </h3>
+                    <p className="text-xs text-slate-400 truncate font-medium bg-slate-900/40 px-2 py-1.5 rounded-lg border border-slate-800">{shareItem.name}</p>
+                  </div>
+
+                  {/* Tabs */}
+                  <div className="flex border-b border-[#334155]">
+                    <button
+                      onClick={() => setShareTab('email')}
+                      className={`flex-1 pb-2 text-sm font-semibold border-b-2 transition-all ${shareTab === 'email' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Bagikan via Email
+                    </button>
+                    <button
+                      onClick={() => setShareTab('link')}
+                      className={`flex-1 pb-2 text-sm font-semibold border-b-2 transition-all ${shareTab === 'link' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Dapatkan Link
+                    </button>
+                  </div>
+
+                  <div>
+                    {shareTab === 'email' ? (
+                      <form onSubmit={handleShareViaEmail} className="space-y-4">
+                        <div>
+                          <label className="block text-xs font-medium text-slate-400 mb-1.5">Alamat Email Penerima</label>
+                          <input
+                            type="email" required value={shareEmail} onChange={e => setShareEmail(e.target.value)}
+                            placeholder="penerima@example.com"
+                            className="w-full px-3.5 py-2.5 rounded-lg bg-[#0f172a] border border-[#334155] focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none text-sm text-white placeholder:text-slate-600 transition-all"
+                          />
+                        </div>
+                        <div className="flex justify-end gap-2.5">
+                          <button type="submit" disabled={isSharing} className="px-5 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-500 transition-all disabled:opacity-50 shadow-lg shadow-blue-500/20 w-full">
+                            {isSharing ? 'Membagikan...' : 'Bagikan'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="space-y-4">
+                        {shareLink ? (
+                          <div className="space-y-2">
+                            <label className="block text-xs font-medium text-slate-400">Link Berbagi</label>
+                            <div className="flex gap-2">
+                              <input
+                                type="text" readOnly value={shareLink}
+                                className="flex-1 px-3 py-2 rounded-lg bg-[#0f172a] border border-[#334155] text-xs text-white outline-none select-all font-mono"
+                              />
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(shareLink);
+                                  showToast('Link disalin!', 'success');
+                                }}
+                                className="px-3.5 py-2 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-500 transition-all shadow-lg"
+                              >
+                                Salin
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="py-2 text-center flex flex-col items-center">
+                            <p className="text-xs text-slate-400 mb-3 font-medium">Buat link publik agar siapa saja dapat mengunduh berkas ini.</p>
+                            <button
+                              onClick={handleGenerateShareLink}
+                              disabled={isSharing}
+                              className="px-5 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-500 transition-all disabled:opacity-50 shadow-lg shadow-blue-500/20 w-full"
+                            >
+                              {isSharing ? 'Membuat Link...' : 'Buat Link Berbagi'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Kelola Akses Section */}
+                  <div className="pt-4 border-t border-[#334155]">
+                    <h4 className="text-xs font-semibold text-slate-300 mb-3 flex items-center gap-1.5">
+                      <svg className="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                      </svg>
+                      Kelola Akses ({existingShares.length})
+                    </h4>
+
+                    {isLoadingExistingShares ? (
+                      <div className="py-4 text-center">
+                        <span className="text-xs text-slate-500 italic animate-pulse">Memuat daftar akses...</span>
+                      </div>
+                    ) : existingShares.length === 0 ? (
+                      <p className="text-xs text-slate-500 italic py-2">Belum dibagikan dengan siapa pun.</p>
+                    ) : (
+                      <div className="space-y-2.5 max-h-40 overflow-y-auto pr-1">
+                        {existingShares.map(share => {
+                          const isEmail = share.share_type === 'email';
+                          return (
+                            <div key={share.id} className="flex items-center justify-between bg-[#0f172a]/60 border border-[#334155]/60 rounded-xl p-2.5 text-xs">
+                              <div className="min-w-0 flex-1 pr-2">
+                                {isEmail ? (
+                                  <div className="flex flex-col">
+                                    <span className="font-semibold text-slate-200 truncate">{share.shared_to}</span>
+                                    <span className="text-[10px] text-slate-500 font-medium">Dibagikan via Email</span>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col">
+                                    <span className="font-semibold text-slate-200 truncate font-mono text-[10px]">Tautan Publik</span>
+                                    <span className="text-[10px] text-blue-400 truncate hover:underline cursor-pointer" onClick={() => {
+                                      const fullLink = `${window.location.origin}/share/${share.token}`;
+                                      navigator.clipboard.writeText(fullLink);
+                                      showToast('Link disalin!', 'success');
+                                    }}>
+                                      Klik untuk Salin Link
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => handleRevokeShare(share.id)}
+                                className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                                title="Hapus Akses"
+                              >
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-16v1a1 1 0 001 1h3M4 7h16" />
+                                </svg>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Selesai / Tutup Button */}
+                  <div className="flex justify-end pt-2">
+                    <button type="button" onClick={() => setShowShareModal(false)} className="px-4 py-2 rounded-lg bg-[#334155]/40 border border-[#334155] text-slate-300 font-semibold text-xs hover:bg-[#334155]/60 transition-all w-full py-2.5">
+                      Tutup
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2010,13 +2480,13 @@ export default function App() {
                             <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
                               <input
                                 type="checkbox"
-                                checked={filteredFiles.length > 0 && filteredFiles.every(f => selectedFileIds.includes(f.id))}
+                                checked={homeFiles.length > 0 && homeFiles.every(f => selectedFileIds.includes(f.id))}
                                 onChange={(e) => {
                                   if (e.target.checked) {
-                                    const idsToAdd = filteredFiles.map(f => f.id);
+                                    const idsToAdd = homeFiles.map(f => f.id);
                                     setSelectedFileIds(prev => Array.from(new Set([...prev, ...idsToAdd])));
                                   } else {
-                                    const idsToRemove = filteredFiles.map(f => f.id);
+                                    const idsToRemove = homeFiles.map(f => f.id);
                                     setSelectedFileIds(prev => prev.filter(id => !idsToRemove.includes(id)));
                                   }
                                 }}
@@ -2035,7 +2505,7 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-[#1e293b] text-sm text-slate-300">
-                          {filteredFiles.map(file => {
+                          {homeFiles.map(file => {
                             const { label, bg } = getFileExtLabel(file.type, file.name);
                             const isSelected = selectedFile?.id === file.id;
                             const isChecked = selectedFileIds.includes(file.id);
@@ -2079,6 +2549,13 @@ export default function App() {
                                       className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition" title="Unduh">
                                       <IconDownload />
                                     </a>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); handleOpenShareModal('file', file.id, file.name); }}
+                                      className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                      title="Bagikan"
+                                    >
+                                      <IconShare />
+                                    </button>
                                     <button onClick={e => { e.stopPropagation(); handleFileDelete(file.id, file.name); }}
                                       className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Hapus">
                                       <IconTrash />
@@ -2098,6 +2575,7 @@ export default function App() {
 
             {/* ── Folders page ── */}
             {activeNav === 'folders' && (() => {
+              const rootFiles = files.filter(f => !f.folder_id && f.name.toLowerCase().includes(searchQuery.toLowerCase()));
               if (selectedFolder) {
                 // ── Folder contents view ──
                 const folderFiles = files.filter(f => f.folder_id === selectedFolder.id);
@@ -2222,6 +2700,13 @@ export default function App() {
                                         <svg className="h-4 w-4" fill={file.is_favorited ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
                                       </button>
                                       <a href={`${BACKEND_URL}${file.path}`} download={file.name} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition" title="Unduh"><IconDownload /></a>
+                                      <button
+                                        onClick={e => { e.stopPropagation(); handleOpenShareModal('file', file.id, file.name); }}
+                                        className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                        title="Bagikan"
+                                      >
+                                        <IconShare />
+                                      </button>
                                       <button onClick={e => { e.stopPropagation(); handleFileDelete(file.id, file.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Hapus"><IconTrash /></button>
                                     </div>
                                   </td>
@@ -2307,13 +2792,22 @@ export default function App() {
                             className="group bg-[#1e293b] border border-[#334155] rounded-xl p-4 hover:border-blue-500/50 hover:bg-[#243347] card-hover cursor-pointer relative"
                           >
                             {!isDefault && (
-                              <button
-                                onClick={e => { e.stopPropagation(); handleDeleteFolder(folder.id, folder.name); }}
-                                className="absolute top-2.5 right-2.5 p-1 rounded-md text-slate-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
-                                title="Hapus folder"
-                              >
-                                <IconTrash />
-                              </button>
+                              <>
+                                <button
+                                  onClick={e => { e.stopPropagation(); handleOpenShareModal('folder', folder.id, folder.name); }}
+                                  className="absolute top-2.5 right-9 p-1 rounded-md text-slate-600 hover:text-blue-400 hover:bg-blue-500/10 opacity-0 group-hover:opacity-100 transition-all"
+                                  title="Bagikan folder"
+                                >
+                                  <IconShare />
+                                </button>
+                                <button
+                                  onClick={e => { e.stopPropagation(); handleDeleteFolder(folder.id, folder.name); }}
+                                  className="absolute top-2.5 right-2.5 p-1 rounded-md text-slate-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
+                                  title="Hapus folder"
+                                >
+                                  <IconTrash />
+                                </button>
+                              </>
                             )}
                             {isDefault && (
                               <span className="absolute top-2 right-2 text-[9px] bg-blue-500/10 text-blue-400 font-medium px-1.5 py-0.5 rounded-md border border-blue-500/20">DEFAULT</span>
@@ -2387,7 +2881,16 @@ export default function App() {
                                 <td className="py-3 px-4 text-right">
                                   <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                     {!isDefault && (
-                                      <button onClick={e => { e.stopPropagation(); handleDeleteFolder(folder.id, folder.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"><IconTrash /></button>
+                                      <>
+                                        <button
+                                          onClick={e => { e.stopPropagation(); handleOpenShareModal('folder', folder.id, folder.name); }}
+                                          className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                          title="Bagikan"
+                                        >
+                                          <IconShare />
+                                        </button>
+                                        <button onClick={e => { e.stopPropagation(); handleDeleteFolder(folder.id, folder.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"><IconTrash /></button>
+                                      </>
                                     )}
                                   </div>
                                 </td>
@@ -2398,6 +2901,101 @@ export default function App() {
                       </table>
                     </div>
                   )}
+
+                  {/* Berkas di Root (di luar folder) */}
+                  <div className="mt-8">
+                    <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Berkas di My Drive</h2>
+                    {rootFiles.length === 0 ? (
+                      <div className="py-12 text-center border border-dashed border-[#334155] rounded-xl bg-[#1e293b]/20">
+                        <p className="text-xs text-slate-500">Belum ada berkas di luar folder</p>
+                      </div>
+                    ) : (
+                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
+                              <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
+                                <input
+                                  type="checkbox"
+                                  checked={rootFiles.length > 0 && rootFiles.every(f => selectedFileIds.includes(f.id))}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      const idsToAdd = rootFiles.map(f => f.id);
+                                      setSelectedFileIds(prev => Array.from(new Set([...prev, ...idsToAdd])));
+                                    } else {
+                                      const idsToRemove = rootFiles.map(f => f.id);
+                                      setSelectedFileIds(prev => prev.filter(id => !idsToRemove.includes(id)));
+                                    }
+                                  }}
+                                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-500 focus:ring-blue-500/50 cursor-pointer"
+                                />
+                              </th>
+                              <th className="pb-2.5 pt-3 px-4">Nama</th>
+                              <th className="pb-2.5 pt-3 px-4">Pemilik</th>
+                              <th className="pb-2.5 pt-3 px-4">Diunggah</th>
+                              <th className="pb-2.5 pt-3 px-4">Ukuran</th>
+                              <th className="pb-2.5 pt-3 px-4" />
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#1e293b] text-sm text-slate-300">
+                            {rootFiles.map(file => {
+                              const { label, bg } = getFileExtLabel(file.type, file.name);
+                              const isSelected = selectedFile?.id === file.id;
+                              const isChecked = selectedFileIds.includes(file.id);
+                              return (
+                                <tr
+                                  key={file.id}
+                                  onClick={() => { setSelectedFile(file); setDetailTab('detail'); }}
+                                  className={`group transition-colors cursor-pointer ${isSelected ? 'bg-blue-500/10 border-l-2 border-l-blue-500' : 'hover:bg-[#243347]'} ${isChecked ? 'bg-blue-500/5' : ''}`}
+                                >
+                                  <td className="py-3 px-4 w-10 shrink-0" onClick={e => e.stopPropagation()}>
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => {
+                                        setSelectedFileIds(prev =>
+                                          prev.includes(file.id) ? prev.filter(id => id !== file.id) : [...prev, file.id]
+                                        );
+                                      }}
+                                      className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-500 focus:ring-blue-500/50 cursor-pointer"
+                                    />
+                                  </td>
+                                  <td className="py-3 px-4 flex items-center gap-2.5">
+                                    <div className={`${bg} text-white rounded-md w-7 h-7 flex items-center justify-center text-[9px] font-bold tracking-wider shrink-0`}>{label}</div>
+                                    <span className="font-medium text-slate-200 truncate max-w-[200px]">{file.name}</span>
+                                    {file.is_favorited && <svg className="h-3 w-3 text-amber-400 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>}
+                                  </td>
+                                  <td className="py-3 px-4 text-slate-400">{file.owner === currentUser?.email ? 'Anda' : file.owner}</td>
+                                  <td className="py-3 px-4 text-slate-400">{timeAgo(file.created_at)}</td>
+                                  <td className="py-3 px-4 text-slate-400">{formatBytes(file.size)}</td>
+                                  <td className="py-3 px-4 text-right">
+                                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button
+                                        onClick={e => { e.stopPropagation(); handleToggleFavorite(file); }}
+                                        className={`p-1.5 rounded-lg transition ${file.is_favorited ? 'text-amber-400 hover:bg-amber-500/10' : 'text-slate-500 hover:text-amber-400 hover:bg-amber-500/10'}`}
+                                        title={file.is_favorited ? 'Hapus dari favorit' : 'Tambah ke favorit'}
+                                      >
+                                        <svg className="h-4 w-4" fill={file.is_favorited ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
+                                      </button>
+                                      <a href={`${BACKEND_URL}${file.path}`} download={file.name} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition" title="Unduh"><IconDownload /></a>
+                                      <button
+                                        onClick={e => { e.stopPropagation(); handleOpenShareModal('file', file.id, file.name); }}
+                                        className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                        title="Bagikan"
+                                      >
+                                        <IconShare />
+                                      </button>
+                                      <button onClick={e => { e.stopPropagation(); handleFileDelete(file.id, file.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Hapus"><IconTrash /></button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </>
               );
             })()}
@@ -2491,6 +3089,13 @@ export default function App() {
                                       <svg className="h-4 w-4" fill={file.is_favorited ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
                                     </button>
                                     <a href={`${BACKEND_URL}${file.path}`} download={file.name} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition" title="Unduh"><IconDownload /></a>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); handleOpenShareModal('file', file.id, file.name); }}
+                                      className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                      title="Bagikan"
+                                    >
+                                      <IconShare />
+                                    </button>
                                     <button onClick={e => { e.stopPropagation(); handleFileDelete(file.id, file.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Hapus"><IconTrash /></button>
                                   </div>
                                 </td>
@@ -2506,13 +3111,162 @@ export default function App() {
             })()}
 
             {/* ── Dibagikan ── */}
-            {activeNav === 'shared' && (
-              <div className="py-20 text-center border border-dashed border-[#334155] rounded-xl bg-[#1e293b]/50">
-                <svg className="h-12 w-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
-                <p className="text-sm font-medium text-slate-400">Belum ada file dibagikan</p>
-                <p className="text-xs text-slate-600 mt-1">Fitur berbagi akan segera hadir.</p>
-              </div>
-            )}
+            {activeNav === 'shared' && (() => {
+              if (isLoadingShared) {
+                return (
+                  <div className="py-12 flex items-center justify-center gap-3 text-slate-400 bg-[#1e293b] rounded-xl border border-[#334155]">
+                    <IconRefresh spin />
+                    <span className="text-sm font-medium">Memuat berkas dibagikan...</span>
+                  </div>
+                );
+              }
+
+              if (selectedSharedFolder) {
+                const folderFiles = selectedSharedFolder.files || [];
+                return (
+                  <>
+                    <div className="flex items-center gap-2 mb-6">
+                      <button
+                        onClick={() => setSelectedSharedFolder(null)}
+                        className="text-blue-400 hover:text-blue-300 text-sm font-medium transition"
+                      >
+                        Dibagikan
+                      </button>
+                      <span className="text-slate-600">/</span>
+                      <h2 className="text-lg font-bold text-white">{selectedSharedFolder.folder.name}</h2>
+                    </div>
+
+                    {folderFiles.length === 0 ? (
+                      <div className="py-16 text-center border border-dashed border-[#334155] rounded-xl bg-[#1e293b]/50">
+                        <p className="text-sm font-medium text-slate-400">Folder kosong</p>
+                      </div>
+                    ) : (
+                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
+                              <th className="pb-2.5 pt-3 px-4">Nama</th>
+                              <th className="pb-2.5 pt-3 px-4">Diunggah</th>
+                              <th className="pb-2.5 pt-3 px-4">Ukuran</th>
+                              <th className="pb-2.5 pt-3 px-4" />
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#1e293b] text-sm text-slate-300">
+                            {folderFiles.map((file: any) => {
+                              const { label, bg } = getFileExtLabel(file.type, file.name);
+                              return (
+                                <tr key={file.id} className="hover:bg-[#243347] transition-colors">
+                                  <td className="py-3 px-4 flex items-center gap-2.5">
+                                    <div className={`${bg} text-white rounded-md w-7 h-7 flex items-center justify-center text-[9px] font-bold tracking-wider shrink-0`}>{label}</div>
+                                    <span className="font-medium text-slate-200 truncate max-w-[200px]">{file.name}</span>
+                                  </td>
+                                  <td className="py-3 px-4 text-slate-400">{timeAgo(file.created_at)}</td>
+                                  <td className="py-3 px-4 text-slate-400">{formatBytes(file.size)}</td>
+                                  <td className="py-3 px-4 text-right">
+                                    <a
+                                      href={`${BACKEND_URL}${file.path}`}
+                                      download={file.name}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition inline-block"
+                                      title="Unduh"
+                                    >
+                                      <IconDownload />
+                                    </a>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                );
+              }
+
+              if (sharedItems.length === 0) {
+                return (
+                  <div className="py-20 text-center border border-dashed border-[#334155] rounded-xl bg-[#1e293b]/50">
+                    <svg className="h-12 w-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+                    <p className="text-sm font-medium text-slate-400">Belum ada file dibagikan</p>
+                    <p className="text-xs text-slate-600 mt-1">File atau folder yang dibagikan dengan Anda akan muncul di sini.</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
+                        <th className="pb-2.5 pt-3 px-4">Nama</th>
+                        <th className="pb-2.5 pt-3 px-4">Dibagikan Oleh</th>
+                        <th className="pb-2.5 pt-3 px-4">Tanggal Berbagi</th>
+                        <th className="pb-2.5 pt-3 px-4">Ukuran</th>
+                        <th className="pb-2.5 pt-3 px-4" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1e293b] text-sm text-slate-300">
+                      {sharedItems.map((item: any) => {
+                        const isFolder = item.type === 'folder';
+                        const name = isFolder ? item.folder.name : item.file.name;
+                        const size = isFolder ? '-' : formatBytes(item.file.size);
+                        const { label, bg } = isFolder ? { label: 'DIR', bg: 'bg-blue-600' } : getFileExtLabel(item.file.type, name);
+
+                        return (
+                          <tr
+                            key={item.share_id}
+                            onClick={() => {
+                              if (isFolder) {
+                                setSelectedSharedFolder(item);
+                              } else {
+                                setSelectedFile(item.file);
+                                setDetailTab('detail');
+                              }
+                            }}
+                            className="group hover:bg-[#243347] cursor-pointer transition-colors"
+                          >
+                            <td className="py-3 px-4 flex items-center gap-2.5">
+                              {isFolder ? (
+                                <IconFolder cls="h-7 w-7 text-blue-400/80 fill-current shrink-0" />
+                              ) : (
+                                <div className={`${bg} text-white rounded-md w-7 h-7 flex items-center justify-center text-[9px] font-bold tracking-wider shrink-0`}>{label}</div>
+                              )}
+                              <span className="font-medium text-slate-200 truncate max-w-[200px]">{name}</span>
+                            </td>
+                            <td className="py-3 px-4 text-slate-400">{item.shared_by}</td>
+                            <td className="py-3 px-4 text-slate-400">{timeAgo(item.created_at)}</td>
+                            <td className="py-3 px-4 text-slate-400">{size}</td>
+                            <td className="py-3 px-4 text-right" onClick={e => e.stopPropagation()}>
+                              {isFolder ? (
+                                <button
+                                  onClick={() => setSelectedSharedFolder(item)}
+                                  className="p-1.5 text-blue-400 hover:text-blue-300 font-semibold text-xs animate-pulse"
+                                >
+                                  Buka
+                                </button>
+                              ) : (
+                                <a
+                                  href={`${BACKEND_URL}${item.file.path}`}
+                                  download={name}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition inline-block"
+                                  title="Unduh"
+                                >
+                                  <IconDownload />
+                                </a>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
 
             {/* ── Favorit ── */}
             {activeNav === 'starred' && (() => {
@@ -2609,6 +3363,13 @@ export default function App() {
                                       <svg className="h-4 w-4" fill="currentColor" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.175 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
                                     </button>
                                     <a href={`${BACKEND_URL}${file.path}`} download={file.name} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition" title="Unduh"><IconDownload /></a>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); handleOpenShareModal('file', file.id, file.name); }}
+                                      className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition"
+                                      title="Bagikan"
+                                    >
+                                      <IconShare />
+                                    </button>
                                     <button onClick={e => { e.stopPropagation(); handleFileDelete(file.id, file.name); }} className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Hapus"><IconTrash /></button>
                                   </div>
                                 </td>
@@ -2973,7 +3734,10 @@ export default function App() {
                     >
                       <IconTrash />
                     </button>
-                    <button className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-[#334155] text-slate-400 text-xs font-medium hover:bg-blue-500/10 hover:text-blue-400 hover:border-blue-500/30 transition">
+                    <button
+                      onClick={() => handleOpenShareModal('file', selectedFile.id, selectedFile.name)}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-[#334155] text-slate-400 text-xs font-medium hover:bg-blue-500/10 hover:text-blue-400 hover:border-blue-500/30 transition"
+                    >
                       <IconShare />
                     </button>
                   </div>
@@ -2982,7 +3746,10 @@ export default function App() {
                   <div className="pt-4 mt-4 border-t border-[#1e293b]">
                     <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2.5">Dibagikan dengan</h4>
                     <p className="text-xs text-slate-600 italic">Belum dibagikan ke siapapun.</p>
-                    <button className="mt-3 flex items-center gap-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 transition">
+                    <button
+                      onClick={() => handleOpenShareModal('file', selectedFile.id, selectedFile.name)}
+                      className="mt-3 flex items-center gap-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 transition"
+                    >
                       <IconPlus />Bagikan dengan orang lain
                     </button>
                   </div>

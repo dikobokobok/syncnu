@@ -67,6 +67,13 @@ func main() {
 	mux.HandleFunc("POST /api/folders", CreateFolderHandler)
 	mux.HandleFunc("DELETE /api/folders/{id}", DeleteFolderHandler)
 
+	// Share routes
+	mux.HandleFunc("POST /api/shares", CreateShareHandler)
+	mux.HandleFunc("GET /api/shared", SharedWithMeHandler)
+	mux.HandleFunc("GET /api/shares/public/{token}", GetPublicShareHandler)
+	mux.HandleFunc("GET /api/shares", GetSharesHandler)
+	mux.HandleFunc("DELETE /api/shares/{id}", DeleteShareHandler)
+
 	// Stats route
 	mux.HandleFunc("GET /api/storage-stats", StorageStatsHandler)
 

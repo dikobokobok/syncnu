@@ -1,12 +1,12 @@
 {
   "name": "syncnu-server",
-  "version": "1.0.0",
+  "version": "1.14.1",
   "description": "Syncnu Golang Backend Server",
   "main": "main.go",
   "scripts": {
     "dev": "go run .",
     "start": "go run .",
-    "build": "go build -o dist/server.exe ."
+    "build": "node ../../scripts/build-server.js"
   },
   "keywords": [
     "golang",

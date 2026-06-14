@@ -36,3 +36,15 @@ type File struct {
 	ModifiedAt  *time.Time `json:"modified_at,omitempty"`
 	DeletedAt   *string    `json:"deleted_at"` // ISO8601 string or null
 }
+
+// Share model mapping to the 'shares' table
+type Share struct {
+	ID        string     `json:"id,omitempty"`
+	FileID    *string    `json:"file_id,omitempty"`
+	FolderID  *string    `json:"folder_id,omitempty"`
+	SharedBy  string     `json:"shared_by"`
+	SharedTo  *string    `json:"shared_to,omitempty"`
+	Token     *string    `json:"token,omitempty"`
+	ShareType string     `json:"share_type"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+}
