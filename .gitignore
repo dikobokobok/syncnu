@@ -10,6 +10,7 @@ app/web/dist/
 server/etc/dist/
 
 # ─── Environment & Secrets ────────────────────────────────────
+# .env sengaja TIDAK diabaikan agar ikut terupload
 .env.local
 .env.*.local
 
@@ -19,6 +20,7 @@ storage/Gambar/*
 storage/Video/*
 storage/Musik/*
 storage/docs/*
+storage/temp/
 # Keep folder structure
 !storage/Dokumen/.gitkeep
 !storage/Gambar/.gitkeep
