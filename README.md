@@ -334,6 +334,35 @@ Setup lengkap ada di [`server/database/schema.sql`](server/database/schema.sql).
 
 ---
 
+## 🧑‍💻 Panduan Pengembang (Developer Guide)
+
+Dokumentasi teknis tambahan untuk mempermudah pengembangan dan pemeliharaan kode:
+
+### 1. Desain Responsif & Sidebar Minimalis
+- **Mobile Sidebar Drawer**: Pada perangkat mobile (lebar layar `< 768px`), sidebar utama disembunyikan di luar layar (`-translate-x-full`). Menekan tombol hamburger di header akan mengaktifkan `isMobileSidebarOpen`, memunculkan sidebar dengan transisi halus (`translate-x-0`) dan overlay latar belakang gelap (`backdrop-blur-sm`).
+- **Responsive Data Tables**: Semua tabel data dibungkus dalam kontainer `.overflow-x-auto` dengan lebar minimum tabel diset ke `min-w-[650px] md:min-w-0`. Desain ini mencegah kolom tabel berhimpitan di perangkat mobile dan memberikan pengalaman geser horizontal yang alami.
+- **Responsive Grid**: Layout grid menggunakan kombinasi kolom responsif (`grid-cols-1 sm:grid-cols-2 md:grid-cols-4`) untuk memastikan tampilan kartu folder dan berkas tersusun rapi di berbagai ukuran layar.
+
+### 2. Notifikasi Berbagi Real-time
+- **Perbandingan & Toast Notifikasi**: Klien Web dan Desktop melakukan *polling* latar belakang secara berkala ke endpoint `/api/notifications`. Saat data baru diterima, klien membandingkan ID notifikasi baru dengan daftar notifikasi sebelumnya (`prevIds`).
+- Jika terdeteksi ID baru yang belum terdaftar di state sebelumnya, klien secara otomatis memicu pesan *toast* interaktif: `showToast("penerima membagikan folder/file dengan Anda", "success")`.
+
+### 3. Arsitektur Database & Optimasi Indeks
+Untuk mempercepat query postgREST pada Supabase, skema database telah dioptimalkan dengan indeks berikut:
+- **`idx_files_owner_deleted`**: Mempercepat pemuatan berkas aktif dan sampah berdasarkan pemilik (`owner`, `deleted_at`).
+- **`idx_files_folder_deleted`**: Mengoptimalkan struktur drill-down folder bersama.
+- **Relasi Cascading**: Tabel `shares` terhubung dengan kunci asing `ON DELETE CASCADE` ke tabel `files` dan `folders` untuk memastikan penghapusan berkas/folder otomatis mencabut semua hak akses berbagi.
+
+### 4. Perintah Pengembangan Monorepo
+Jalankan perintah berikut di root direktori untuk mengelola monorepo:
+- **Mode Development (Stack Lengkap)**: `npm run dev` (menjalankan web frontend dan Go backend secara bersamaan menggunakan `concurrently`).
+- **Development Web**: `npm run dev:web`
+- **Development Server**: `npm run dev:server`
+- **Desktop Tauri dev**: `cd app/desktop && npm run tauri dev`
+- **Type checking**: `npm run build:web` atau `tsc --noEmit` di masing-masing sub-workspace.
+
+---
+
 ## 📋 Changelog
 
 ### v1.14.1

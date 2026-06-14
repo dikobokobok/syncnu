@@ -18,13 +18,14 @@ import (
 var storageDir string
 
 type RegisterReq struct {
+	Username string `json:"username"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Name     string `json:"name"`
 }
 
 type LoginReq struct {
-	Email    string `json:"email"`
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -47,8 +48,15 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, `{"error":"Email dan password wajib diisi"}`, http.StatusBadRequest)
+	if req.Username == "" || req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"Username, email, dan password wajib diisi"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate username format
+	usernameRegexp := regexp.MustCompile(`^[a-zA-Z0-9_-]{3,30}$`)
+	if !usernameRegexp.MatchString(req.Username) {
+		http.Error(w, `{"error":"Username harus 3-30 karakter, hanya huruf, angka, underscore, atau strip"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -57,15 +65,26 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check existing user
-	var existing []User
-	err := supabase.Select("users", "id", map[string]string{"email": "eq." + strings.ToLower(req.Email)}, &existing)
+	// Check existing username
+	var existingUser []User
+	err := supabase.Select("users", "id", map[string]string{"username": "eq." + strings.ToLower(req.Username)}, &existingUser)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Database error: %s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
+	if len(existingUser) > 0 {
+		http.Error(w, `{"error":"Username sudah terdaftar"}`, http.StatusConflict)
+		return
+	}
 
-	if len(existing) > 0 {
+	// Check existing email
+	var existingEmail []User
+	err = supabase.Select("users", "id", map[string]string{"email": "eq." + strings.ToLower(req.Email)}, &existingEmail)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if len(existingEmail) > 0 {
 		http.Error(w, `{"error":"Email sudah terdaftar"}`, http.StatusConflict)
 		return
 	}
@@ -78,11 +97,11 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	displayName := req.Name
 	if displayName == "" {
-		parts := strings.Split(req.Email, "@")
-		displayName = parts[0]
+		displayName = req.Username
 	}
 
 	newUser := User{
+		Username: strings.ToLower(req.Username),
 		Email:    strings.ToLower(req.Email),
 		Password: hashedPassword,
 		Name:     displayName,
@@ -101,6 +120,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		"message": "Akun berhasil dibuat",
 		"user": map[string]interface{}{
 			"id":         inserted[0].ID,
+			"username":   inserted[0].Username,
 			"email":      inserted[0].Email,
 			"name":       inserted[0].Name,
 			"created_at": inserted[0].CreatedAt,
@@ -120,25 +140,25 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, `{"error":"Email dan password wajib diisi"}`, http.StatusBadRequest)
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, `{"error":"Username dan password wajib diisi"}`, http.StatusBadRequest)
 		return
 	}
 
 	var users []User
-	err := supabase.Select("users", "id,email,name,password", map[string]string{"email": "eq." + strings.ToLower(req.Email)}, &users)
+	err := supabase.Select("users", "id,username,email,name,password", map[string]string{"username": "eq." + strings.ToLower(req.Username)}, &users)
 	if err != nil || len(users) == 0 {
-		http.Error(w, `{"error":"Email atau password salah"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Username atau password salah"}`, http.StatusUnauthorized)
 		return
 	}
 
 	user := users[0]
 	if !CheckPasswordHash(req.Password, user.Password) {
-		http.Error(w, `{"error":"Email atau password salah"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Username atau password salah"}`, http.StatusUnauthorized)
 		return
 	}
 
-	token, err := GenerateJWT(user.ID, user.Email, user.Name)
+	token, err := GenerateJWT(user.ID, user.Username, user.Email, user.Name)
 	if err != nil {
 		http.Error(w, `{"error":"Failed to sign JWT"}`, http.StatusInternalServerError)
 		return
@@ -148,9 +168,10 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"token": token,
 		"user": map[string]string{
-			"id":    user.ID,
-			"email": user.Email,
-			"name":  user.Name,
+			"id":       user.ID,
+			"username": user.Username,
+			"email":    user.Email,
+			"name":     user.Name,
 		},
 	})
 }
@@ -172,9 +193,10 @@ func MeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user": map[string]string{
-			"id":    claims.ID,
-			"email": claims.Email,
-			"name":  claims.Name,
+			"id":       claims.ID,
+			"username": claims.Username,
+			"email":    claims.Email,
+			"name":     claims.Name,
 		},
 	})
 }
@@ -876,6 +898,82 @@ func GetSharesHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(shares)
+}
+
+func NotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	email, err := getUserFromAuth(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+		return
+	}
+
+	filters := map[string]string{
+		"shared_to": "eq." + strings.ToLower(email),
+		"order":     "created_at.desc",
+		"limit":     "20",
+	}
+
+	sinceParam := r.URL.Query().Get("since")
+	if sinceParam != "" {
+		if _, parseErr := time.Parse(time.RFC3339, sinceParam); parseErr == nil {
+			filters["created_at"] = "gt." + sinceParam
+		}
+	}
+
+	var shares []Share
+	err = supabase.Select("shares", "*", filters, &shares)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Database error: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	type Notification struct {
+		ID        string     `json:"id"`
+		Type      string     `json:"type"`
+		Message   string     `json:"message"`
+		SharedBy  string     `json:"shared_by"`
+		ItemName  string     `json:"item_name"`
+		ItemType  string     `json:"item_type"`
+		CreatedAt *time.Time `json:"created_at"`
+	}
+
+	notifications := []Notification{}
+
+	for _, s := range shares {
+		var itemName string
+		var itemType string
+
+		if s.FileID != nil {
+			var files []File
+			if err := supabase.Select("files", "name", map[string]string{"id": "eq." + *s.FileID}, &files); err == nil && len(files) > 0 {
+				itemName = files[0].Name
+			}
+			itemType = "file"
+		} else if s.FolderID != nil {
+			var folders []Folder
+			if err := supabase.Select("folders", "name", map[string]string{"id": "eq." + *s.FolderID}, &folders); err == nil && len(folders) > 0 {
+				itemName = folders[0].Name
+			}
+			itemType = "folder"
+		}
+
+		if itemName == "" || itemType == "" {
+			continue
+		}
+
+		notifications = append(notifications, Notification{
+			ID:        s.ID,
+			Type:      "share",
+			Message:   "shared a " + itemType + " with you",
+			SharedBy:  s.SharedBy,
+			ItemName:  itemName,
+			ItemType:  itemType,
+			CreatedAt: s.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(notifications)
 }
 
 func DeleteShareHandler(w http.ResponseWriter, r *http.Request) {

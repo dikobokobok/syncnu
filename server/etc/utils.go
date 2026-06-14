@@ -15,9 +15,10 @@ import (
 
 // JWTClaims represents claims for Syncnu JWT tokens
 type JWTClaims struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
 	jwt.RegisteredClaims
 }
 
@@ -105,12 +106,13 @@ func CheckPasswordHash(password, hash string) bool {
 }
 
 // GenerateJWT creates a new JWT token signed with JWT_SECRET
-func GenerateJWT(id, email, name string) (string, error) {
+func GenerateJWT(id, username, email, name string) (string, error) {
 	secret := GetEnv("JWT_SECRET", "syncnu_fallback_secret")
 	claims := JWTClaims{
-		ID:    id,
-		Email: email,
-		Name:  name,
+		ID:       id,
+		Username: username,
+		Email:    email,
+		Name:     name,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

@@ -21,7 +21,7 @@ interface FileItem {
   created_at: string;
   modified_at?: string;
   folder_id?: string | null;
-  folder_name?: string | null;   // snapshot nama folder, tetap ada walau folder dihapus
+  folder_name?: string | null;
   deleted_at?: string | null;
   is_favorited?: boolean;
 }
@@ -33,6 +33,16 @@ interface FolderItem {
   created_at: string;
   fileCount?: number;
   modified_at?: string;
+}
+
+interface Notification {
+  id: string;
+  type: string;
+  message: string;
+  shared_by: string;
+  item_name: string;
+  item_type: string;
+  created_at: string;
 }
 
 type ActiveNav = 'home' | 'recent' | 'shared' | 'starred' | 'trash' | 'folders';
@@ -52,6 +62,16 @@ interface ActivityItem {
   fileCount?: number;     // folder delete: jumlah file di dalamnya
   status: ActivityStatus;
   errorMsg?: string;
+}
+
+interface Notification {
+  id: string;
+  type: string;
+  message: string;
+  shared_by: string;
+  item_name: string;
+  item_type: string; // "file" or "folder"
+  created_at: string;
 }
 
 
@@ -793,10 +813,12 @@ function LoginPage({
   onLogin,
   onRegister,
 }: {
-  onLogin: (u: string, p: string) => Promise<{ success: boolean; message?: string }>;
-  onRegister: (u: string, p: string) => Promise<{ success: boolean; message?: string }>;
+  onLogin: (username: string, pass: string) => Promise<{ success: boolean; message?: string }>;
+  onRegister: (username: string, email: string, pass: string, name: string) => Promise<{ success: boolean; message?: string }>;
 }) {
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState('');
@@ -817,7 +839,7 @@ function LoginPage({
     setLoading(true);
     try {
       if (isRegistering) {
-        const res = await onRegister(email, password);
+        const res = await onRegister(username, email, password, name);
         if (!res.success) {
           setError(res.message || 'Pendaftaran gagal.');
         } else {
@@ -825,9 +847,9 @@ function LoginPage({
           setIsRegistering(false);
         }
       } else {
-        const res = await onLogin(email, password);
+        const res = await onLogin(username, password);
         if (!res.success) {
-          setError(res.message || 'Email atau password salah.');
+          setError(res.message || 'Username atau password salah.');
         }
       }
     } catch (err: any) {
@@ -896,13 +918,33 @@ function LoginPage({
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
                   <input
-                    type="email" required value={email} onChange={e => setEmail(e.target.value)}
-                    placeholder="admin@syncnu.app"
+                    type="text" required value={username} onChange={e => setUsername(e.target.value)}
+                    placeholder="admin"
                     className="w-full px-3.5 py-2.5 rounded-lg bg-[#0f172a] border border-[#334155] focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none text-sm text-white placeholder:text-slate-600 transition-all"
                   />
                 </div>
+                {isRegistering && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
+                      <input
+                        type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                        placeholder="email@example.com"
+                        className="w-full px-3.5 py-2.5 rounded-lg bg-[#0f172a] border border-[#334155] focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none text-sm text-white placeholder:text-slate-600 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Nama</label>
+                      <input
+                        type="text" value={name} onChange={e => setName(e.target.value)}
+                        placeholder="Nama lengkap (opsional)"
+                        className="w-full px-3.5 py-2.5 rounded-lg bg-[#0f172a] border border-[#334155] focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none text-sm text-white placeholder:text-slate-600 transition-all"
+                      />
+                    </div>
+                  </>
+                )}
                 <div>
                   <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
                   <input
@@ -929,11 +971,7 @@ function LoginPage({
                 </button>
               </div>
 
-              <div className="mt-5 pt-5 border-t border-[#334155]">
-                <p className="text-[11px] text-slate-500 text-center">
-                  Akun uji coba: <span className="text-blue-400 font-medium">admin@syncnu.app</span> / <span className="text-blue-400 font-medium">admin123</span>
-                </p>
-              </div>
+
             </>
           )}
         </div>
@@ -967,6 +1005,15 @@ export default function App() {
   const [folderSortAsc, setFolderSortAsc] = useState(true);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [storageStats, setStorageStats] = useState<{ used: number; total: number; free: number } | null>(null);
+
+  // Notification states
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [lastNotifCheck, setLastNotifCheck] = useState<string | null>(() => localStorage.getItem('syncnu_last_notif_check'));
+
+  // Mobile sidebar state
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [trashFiles, setTrashFiles] = useState<FileItem[]>([]);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
@@ -1003,6 +1050,8 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderDirUploadRef = useRef<HTMLInputElement>(null);
+  const notifPanelRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const showToast = (text: string, type: 'success' | 'error') => {
     setToast({ text, type });
@@ -1413,6 +1462,37 @@ export default function App() {
     }
   };
 
+  const fetchNotifications = async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/notifications`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data: Notification[] = res.data || [];
+      
+      setNotifications(prev => {
+        if (prev.length > 0) {
+          const prevIds = new Set(prev.map(n => n.id));
+          data.forEach(n => {
+            if (!prevIds.has(n.id)) {
+              showToast(`${n.shared_by} membagikan ${n.item_type === 'folder' ? 'folder' : 'file'} "${n.item_name}" dengan Anda`, 'success');
+            }
+          });
+        }
+        return data;
+      });
+
+      const lastCheck = lastNotifCheck || localStorage.getItem('syncnu_last_notif_check');
+      const unread = lastCheck
+        ? data.filter(n => new Date(n.created_at) > new Date(lastCheck)).length
+        : data.length;
+      setUnreadNotifCount(unread);
+    } catch {
+      // Notifications endpoint may not be available yet
+    }
+  };
+
   const fetchSharedItems = async (silent = false) => {
     const token = getToken();
     if (!token) return;
@@ -1568,6 +1648,15 @@ export default function App() {
   }, [activeNav, isAuthenticated, currentUser]);
 
   useEffect(() => {
+    // Check if path is /logout on startup
+    if (window.location.pathname === '/logout') {
+      clearToken();
+      setIsAuthenticated(false);
+      setCurrentUser(null);
+      window.history.replaceState({}, '', '/');
+      return;
+    }
+
     // Cek token yang tersimpan di localStorage
     const token = getToken();
     if (!token) {
@@ -1579,10 +1668,10 @@ export default function App() {
     axios.get(`${BACKEND_URL}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     }).then(res => {
-      const { email, name } = res.data.user;
-      const initials = (name || email).slice(0, 2).toUpperCase();
+      const { username, email, name } = res.data.user;
+      const initials = (name || username).slice(0, 2).toUpperCase();
       setIsAuthenticated(true);
-      setCurrentUser({ name: name || email.split('@')[0], email, initials });
+      setCurrentUser({ name: name || username, email, initials });
     }).catch(() => {
       clearToken();
       setIsAuthenticated(false);
@@ -1595,12 +1684,48 @@ export default function App() {
       fetchFiles();
       fetchFolders();
       fetchStorageStats();
+      fetchNotifications();
     } else {
       setFiles([]);
       setFolders([]);
       setStorageStats(null);
+      setNotifications([]);
+      setUnreadNotifCount(0);
     }
   }, [isAuthenticated, currentUser]);
+
+  // Poll notifications every 30 seconds
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser) return;
+    const interval = setInterval(() => {
+      fetchNotifications();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, currentUser]);
+
+  // Close notification panel on outside click
+  useEffect(() => {
+    if (!showNotifPanel) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (notifPanelRef.current && !notifPanelRef.current.contains(e.target as Node)) {
+        setShowNotifPanel(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showNotifPanel]);
+
+  // Close menus on outside click
+  useEffect(() => {
+    if (!showUserMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showUserMenu]);
 
   useEffect(() => {
     if (activeNav === 'trash' && isAuthenticated && currentUser) {
@@ -1615,24 +1740,24 @@ export default function App() {
     };
   }, []);
 
-  const handleLogin = async (email: string, pass: string) => {
+  const handleLogin = async (username: string, pass: string) => {
     try {
-      const res = await axios.post(`${BACKEND_URL}/api/auth/login`, { email, password: pass });
+      const res = await axios.post(`${BACKEND_URL}/api/auth/login`, { username, password: pass });
       const { token, user } = res.data;
       setToken(token);
-      const initials = (user.name || user.email).slice(0, 2).toUpperCase();
-      setCurrentUser({ name: user.name || user.email.split('@')[0], email: user.email, initials });
+      const initials = (user.name || user.username).slice(0, 2).toUpperCase();
+      setCurrentUser({ name: user.name || user.username, email: user.email, initials });
       setIsAuthenticated(true);
       return { success: true };
     } catch (err: any) {
-      const msg = err?.response?.data?.error || 'Email atau password salah.';
+      const msg = err?.response?.data?.error || 'Username atau password salah.';
       return { success: false, message: msg };
     }
   };
 
-  const handleRegister = async (email: string, pass: string) => {
+  const handleRegister = async (username: string, email: string, pass: string, name: string) => {
     try {
-      await axios.post(`${BACKEND_URL}/api/auth/register`, { email, password: pass });
+      await axios.post(`${BACKEND_URL}/api/auth/register`, { username, email, password: pass, name });
       return { success: true };
     } catch (err: any) {
       const msg = err?.response?.data?.error || 'Pendaftaran gagal.';
@@ -1645,6 +1770,7 @@ export default function App() {
     setIsAuthenticated(false);
     setCurrentUser(null);
     setShowUserMenu(false);
+    window.history.replaceState({}, '', '/');
   };
 
   const handleFileDelete = async (id: string, name: string) => {
@@ -1941,41 +2067,143 @@ export default function App() {
         </div>
       )}
 
+      {/* ── Mobile Sidebar Overlay ── */}
+      {isMobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 md:hidden"
+          onClick={() => setIsMobileSidebarOpen(false)}
+        />
+      )}
+
       {/* ── Top Navigation Bar ── */}
-      <header className="h-13 bg-[#111827] border-b border-[#1e293b] flex items-center justify-between px-5 shrink-0 z-30" style={{height:'52px'}}>
-        {/* Logo */}
-        <div className="flex items-center gap-1.5 w-56 shrink-0">
-          <img src="/icon.png" alt="Syncnu" className="w-9 h-9 rounded-xl object-contain shrink-0" />
-          <span className="font-bold text-sm text-white tracking-tight">Syncnu</span>
+      <header className="bg-[#111827] border-b border-[#1e293b] flex items-center justify-between px-4 shrink-0 z-30 h-[52px]">
+        {/* Hamburger (mobile only) + Logo */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            className="md:hidden p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1e293b] rounded-lg transition"
+            onClick={() => setIsMobileSidebarOpen(v => !v)}
+            aria-label="Toggle menu"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="flex items-center gap-1.5">
+            <img src="/icon.png" alt="Syncnu" className="w-8 h-8 rounded-xl object-contain shrink-0" />
+            <span className="font-bold text-sm text-white tracking-tight hidden sm:block">Syncnu</span>
+          </div>
         </div>
 
         {/* Search */}
-        <div className="flex-1 max-w-lg px-4">
+        <div className="flex-1 max-w-lg px-3">
           <div className="relative">
             <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-500"><IconSearch /></span>
             <input
               value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
               className="w-full bg-[#1e293b] border border-[#334155] rounded-lg py-2 pl-9 pr-4 text-sm text-slate-200 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none placeholder:text-slate-500"
-              placeholder="Cari file atau folder..." type="text"
+              placeholder="Cari file..." type="text"
             />
           </div>
         </div>
 
         {/* Right actions */}
-        <div className="flex items-center gap-1">
-          <button className="p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1e293b] rounded-lg transition" title="Notifikasi"><IconBell /></button>
-          <button className="p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1e293b] rounded-lg transition mr-1" title="Pengaturan"><IconSettings /></button>
-          <div className="relative">
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Notification bell */}
+          <div className="relative" ref={notifPanelRef}>
+            <button
+              onClick={() => {
+                setShowNotifPanel(v => !v);
+                if (!showNotifPanel) {
+                  const now = new Date().toISOString();
+                  localStorage.setItem('syncnu_last_notif_check', now);
+                  setLastNotifCheck(now);
+                  setUnreadNotifCount(0);
+                }
+              }}
+              className="relative p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1e293b] rounded-lg transition"
+              title="Notifikasi"
+            >
+              <IconBell />
+              {unreadNotifCount > 0 && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-[#111827]" />
+              )}
+            </button>
+
+            {/* Notification dropdown panel */}
+            {showNotifPanel && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                className="absolute right-0 top-full mt-2 w-80 bg-[#1e293b] border border-[#334155] rounded-xl shadow-2xl z-50 overflow-hidden"
+              >
+                <div className="flex items-center justify-between px-4 py-3 border-b border-[#334155]">
+                  <span className="text-sm font-semibold text-white">Notifikasi</span>
+                  <button
+                    onClick={() => setShowNotifPanel(false)}
+                    className="p-1 text-slate-500 hover:text-slate-300 rounded transition"
+                  >
+                    <IconX />
+                  </button>
+                </div>
+                <div className="max-h-80 overflow-y-auto divide-y divide-[#334155]/50">
+                  {notifications.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-10 text-center">
+                      <IconBell />
+                      <p className="text-sm font-medium text-slate-400 mt-3">Belum ada notifikasi</p>
+                      <p className="text-xs text-slate-500 mt-1">Notifikasi berbagi akan muncul di sini</p>
+                    </div>
+                  ) : (
+                    notifications.map(notif => (
+                      <div key={notif.id} className="px-4 py-3 hover:bg-[#0f172a]/40 transition">
+                        <div className="flex items-start gap-3">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${notif.item_type === 'folder' ? 'bg-blue-500/15' : 'bg-emerald-500/15'}`}>
+                            {notif.item_type === 'folder'
+                              ? <IconFolder cls="h-4 w-4 text-blue-400 fill-current" />
+                              : <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            }
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-slate-200 leading-relaxed">
+                              <span className="font-semibold text-blue-400">{notif.shared_by}</span>
+                              {' '}membagikan {notif.item_type === 'folder' ? 'folder' : 'file'}{' '}
+                              <span className="font-semibold text-slate-100">"{notif.item_name}"</span>
+                              {' '}kepada Anda
+                            </p>
+                            <p className="text-[10px] text-slate-500 mt-0.5">{timeAgo(notif.created_at)}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {notifications.length > 0 && (
+                  <div className="px-4 py-2.5 border-t border-[#334155]">
+                    <button
+                      onClick={() => { setActiveNav('shared'); setShowNotifPanel(false); }}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-medium transition"
+                    >
+                      Lihat semua yang dibagikan →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button className="hidden sm:block p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1e293b] rounded-lg transition" title="Pengaturan"><IconSettings /></button>
+          <div className="relative" ref={userMenuRef}>
             <button
               onClick={() => setShowUserMenu(v => !v)}
               className="flex items-center gap-2 cursor-pointer hover:bg-[#1e293b] px-2 py-1.5 rounded-lg transition"
             >
-              <div className="h-7 w-7 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white text-[11px] font-bold shadow-lg">{currentUser.initials}</div>
-              <span className="text-sm font-medium text-slate-200">{currentUser.name}</span>
+              <div className="h-7 w-7 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white text-[11px] font-bold shadow-lg shrink-0">{currentUser.initials}</div>
+              <span className="text-sm font-medium text-slate-200 hidden md:block">{currentUser.name}</span>
               <IconChevronDown />
             </button>
             {showUserMenu && (
-              <div className="absolute right-0 top-full mt-1.5 w-48 bg-[#1e293b] border border-[#334155] rounded-xl shadow-2xl z-50 py-1.5 text-sm overflow-hidden">
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                className="absolute right-0 top-full mt-1.5 w-48 bg-[#1e293b] border border-[#334155] rounded-xl shadow-2xl z-50 py-1.5 text-sm overflow-hidden"
+              >
                 <div className="px-3.5 py-2.5 border-b border-[#334155]">
                   <p className="font-semibold text-white text-sm">{currentUser.name}</p>
                   <p className="text-slate-400 text-xs mt-0.5">{currentUser.email}</p>
@@ -1987,9 +2215,29 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+
         {/* ── Left Sidebar ── */}
-        <aside className="w-56 bg-[#111827] border-r border-[#1e293b] overflow-y-auto flex flex-col py-4 shrink-0">
+        <aside className={`
+          fixed md:relative inset-y-0 left-0 z-50 md:z-auto
+          w-64 md:w-56 bg-[#111827] border-r border-[#1e293b]
+          overflow-y-auto flex flex-col py-4 shrink-0
+          transform transition-transform duration-300 ease-in-out
+          ${isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+        `}>
+          {/* Mobile close button */}
+          <div className="flex items-center justify-between px-4 mb-2 md:hidden">
+            <div className="flex items-center gap-1.5">
+              <img src="/icon.png" alt="Syncnu" className="w-7 h-7 rounded-lg object-contain" />
+              <span className="font-bold text-sm text-white">Syncnu</span>
+            </div>
+            <button
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg transition"
+            >
+              <IconX />
+            </button>
+          </div>
           <nav className="flex-1 px-3">
             {/* Main nav */}
             <ul className="space-y-0.5">
@@ -2003,7 +2251,13 @@ export default function App() {
               ] as { key: ActiveNav; label: string; icon: React.ReactNode }[]).map(item => (
                 <li key={item.key}>
                   <button
-                    onClick={() => { setActiveNav(item.key); setSelectedFolder(null); setSelectedSharedFolder(null); setSelectedFileIds([]); }}
+                    onClick={() => {
+                      setActiveNav(item.key);
+                      setSelectedFolder(null);
+                      setSelectedSharedFolder(null);
+                      setSelectedFileIds([]);
+                      setIsMobileSidebarOpen(false);
+                    }}
                     className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition sidebar-item ${activeNav === item.key ? 'sidebar-item-active text-blue-400' : 'text-slate-400 hover:text-slate-200 hover:bg-[#1e293b]'}`}
                   >
                     {item.icon}{item.label}
@@ -2068,8 +2322,6 @@ export default function App() {
           </nav>
         </aside>
         {/* ── End Left Sidebar ── */}
-
-        {/* ── Main Content ── */}
         <main
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
@@ -2369,7 +2621,7 @@ export default function App() {
                     <button className="text-xs font-medium text-blue-400 hover:text-blue-300 transition">Lihat semua</button>
                   </div>
                   {recentFiles.length > 0 ? (
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                       {recentFiles.map(file => {
                         const { label, bg } = getFileExtLabel(file.type, file.name);
                         return (
@@ -2404,7 +2656,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                       {Array.from({ length: 4 }).map((_, i) => (
                         <div key={i} className="bg-[#1e293b]/50 border border-dashed border-[#334155] rounded-xl p-3 flex items-center justify-center h-[100px]">
                           <p className="text-xs text-slate-600">Belum ada file</p>
@@ -2425,7 +2677,7 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                     {folders.map(folder => {
                       const isDefault = isDefaultFolder(folder.name);
                       const defCfg = DEFAULT_FOLDERS[folder.name];
@@ -2473,8 +2725,8 @@ export default function App() {
                       <p className="text-sm text-slate-500 mt-1">Unggah berkas pertama Anda menggunakan tombol di atas.</p>
                     </div>
                   ) : (
-                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                      <table className="w-full text-left">
+                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                      <table className="w-full text-left min-w-[650px] md:min-w-0">
                         <thead>
                           <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                             <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
@@ -2632,8 +2884,8 @@ export default function App() {
                         <p className="text-xs text-slate-600 mt-1">Klik untuk mengunggah berkas, atau seret berkas & folder ke sini.</p>
                       </div>
                     ) : (
-                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                        <table className="w-full text-left">
+                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                        <table className="w-full text-left min-w-[650px] md:min-w-0">
                           <thead>
                             <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                               <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
@@ -2780,7 +3032,7 @@ export default function App() {
                       <p className="text-xs text-slate-600 mt-1">Klik untuk membuat folder pertama Anda</p>
                     </div>
                   ) : viewMode === 'grid' ? (
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                       {sortedFolders.map(folder => {
                         const count = files.filter(f => f.folder_id === folder.id).length;
                         const isDefault = isDefaultFolder(folder.name);
@@ -2910,8 +3162,8 @@ export default function App() {
                         <p className="text-xs text-slate-500">Belum ada berkas di luar folder</p>
                       </div>
                     ) : (
-                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                        <table className="w-full text-left">
+                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                        <table className="w-full text-left min-w-[650px] md:min-w-0">
                           <thead>
                             <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                               <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
@@ -3013,8 +3265,8 @@ export default function App() {
                       <p className="text-xs text-slate-600 mt-1">Unggah file dari halaman Beranda.</p>
                     </div>
                   ) : (
-                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                      <table className="w-full text-left">
+                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                      <table className="w-full text-left min-w-[650px] md:min-w-0">
                         <thead>
                           <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                             <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
@@ -3141,8 +3393,8 @@ export default function App() {
                         <p className="text-sm font-medium text-slate-400">Folder kosong</p>
                       </div>
                     ) : (
-                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                        <table className="w-full text-left">
+                      <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                        <table className="w-full text-left min-w-[650px] md:min-w-0">
                           <thead>
                             <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                               <th className="pb-2.5 pt-3 px-4">Nama</th>
@@ -3196,8 +3448,8 @@ export default function App() {
               }
 
               return (
-                <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                  <table className="w-full text-left">
+                <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                  <table className="w-full text-left min-w-[650px] md:min-w-0">
                     <thead>
                       <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                         <th className="pb-2.5 pt-3 px-4">Nama</th>
@@ -3287,8 +3539,8 @@ export default function App() {
                       </p>
                     </div>
                   ) : (
-                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                      <table className="w-full text-left">
+                    <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                      <table className="w-full text-left min-w-[650px] md:min-w-0">
                         <thead>
                           <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155] bg-[#111827]/50">
                             <th className="py-2.5 pt-3 px-4 w-10 shrink-0">
@@ -3579,8 +3831,8 @@ export default function App() {
                           {folderGroups.size > 0 && (
                             <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">File Lainnya</p>
                           )}
-                          <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
-                            <table className="w-full text-left">
+                          <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden overflow-x-auto">
+                            <table className="w-full text-left min-w-[650px] md:min-w-0">
                               <thead>
                                 <tr className="text-[11px] font-medium text-slate-500 tracking-wider border-b border-[#334155]">
                                   <th className="py-2.5 pt-3 px-4 w-10 shrink-0">

@@ -24,6 +24,7 @@ DROP TABLE IF EXISTS shares CASCADE;
 -- Tabel users (menggantikan Supabase Auth)
 CREATE TABLE users (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  username    TEXT        NOT NULL UNIQUE,
   email       TEXT        NOT NULL UNIQUE,
   password    TEXT        NOT NULL,       -- bcrypt hash
   name        TEXT        NOT NULL DEFAULT '',
@@ -31,6 +32,7 @@ CREATE TABLE users (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_email ON users(email);
 
 -- Tabel folders
@@ -86,7 +88,8 @@ INSERT INTO folders (name, owner) VALUES
 --    node -e "import('bcryptjs').then(b => b.default.hash('passwordAnda',10).then(h => console.log(h)))"
 -- ============================================================
 
-INSERT INTO users (email, password, name) VALUES (
+INSERT INTO users (username, email, password, name) VALUES (
+  'admin',
   'admin@syncnu.app',
   '$2b$10$NL0n8oYaKZsTv6r.g7rR3.YOrrjrGJr6LyUrmfIV86ELY0wbc4qVa',
   'admin'

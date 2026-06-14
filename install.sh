@@ -184,16 +184,13 @@ npm install
 success "Semua dependensi berhasil diinstall."
 
 # ─────────────────────────────────────────────────────────────
-step "5/6 — Build production"
+step "5/6 — Mode Development"
 # ─────────────────────────────────────────────────────────────
 
-info "Membangun frontend..."
-npm run build:web
+info "Tidak diperlukan build produksi untuk mode development."
+info "Frontend Vite dev server & backend Go akan dijalankan langsung dari source."
 
-info "Membangun backend..."
-npm run build:server
-
-success "Build selesai."
+success "Konfigurasi selesai."
 
 # ─────────────────────────────────────────────────────────────
 step "6/6 — Setup database"
@@ -254,17 +251,17 @@ if [ "$SYSTEMD_AVAILABLE" = true ]; then
 
     sudo tee "$SERVICE_FILE" > /dev/null <<SVCEOF
 [Unit]
-Description=Syncnu Cloud Drive Storage
+Description=Syncnu Cloud Drive Storage (Dev Mode)
 After=network.target
 
 [Service]
 Type=simple
 User=$USER
 WorkingDirectory=$WORKING_DIR
-ExecStart=/usr/bin/npm run start
+ExecStart=/usr/bin/npm run dev
 Restart=on-failure
 RestartSec=5
-Environment=NODE_ENV=production
+Environment=NODE_ENV=development
 
 [Install]
 WantedBy=multi-user.target
@@ -283,6 +280,7 @@ else
   warn "systemctl tidak ditemukan. Lewati pembuatan systemd service."
 fi
 
-echo -e "\n  ${GREEN}✓ Memulai aplikasi...${RESET}"
+echo -e "\n  ${GREEN}✓ Memulai aplikasi dalam mode development...${RESET}"
 echo -e "  Tekan ${YELLOW}Ctrl+C${RESET} untuk menghentikan.\n"
+export NODE_ENV=development
 npm run dev

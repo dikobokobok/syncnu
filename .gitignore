@@ -8,6 +8,9 @@ dist/
 build/
 app/web/dist/
 server/etc/dist/
+*.exe
+installers/
+
 
 # ─── Environment & Secrets ────────────────────────────────────
 # .env sengaja TIDAK diabaikan agar ikut terupload

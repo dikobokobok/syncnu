@@ -74,6 +74,9 @@ func main() {
 	mux.HandleFunc("GET /api/shares", GetSharesHandler)
 	mux.HandleFunc("DELETE /api/shares/{id}", DeleteShareHandler)
 
+	// Notifications route
+	mux.HandleFunc("GET /api/notifications", NotificationsHandler)
+
 	// Stats route
 	mux.HandleFunc("GET /api/storage-stats", StorageStatsHandler)
 
