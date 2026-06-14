@@ -180,20 +180,15 @@ success "Semua dependensi berhasil diinstall."
 step "5/6 — Build production"
 # ─────────────────────────────────────────────────────────────
 
-echo ""
-read -rp "  Build untuk production sekarang? (y/N): " DO_BUILD
+info "Menjalankan build production otomatis..."
 
-if [[ "$DO_BUILD" =~ ^[Yy]$ ]]; then
-  info "Membangun frontend..."
-  npm run build:web
+info "Membangun frontend..."
+npm run build:web
 
-  info "Membangun backend..."
-  npm run build:server
+info "Membangun backend..."
+npm run build:server
 
-  success "Build selesai."
-else
-  info "Lewati build. Gunakan 'npm run dev' untuk mode development."
-fi
+success "Build selesai."
 
 # ─────────────────────────────────────────────────────────────
 step "6/6 — Setup database"
@@ -245,4 +240,3 @@ if [[ "$RUN_NOW" =~ ^[Yy]$ ]]; then
 else
   info "Aplikasi tidak dijalankan. Anda dapat menjalankannya nanti dengan: ${CYAN}npm run dev${RESET}"
 fi
-
