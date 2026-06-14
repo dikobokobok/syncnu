@@ -1,0 +1,18 @@
+{
+  "name": "syncnu-server",
+  "version": "1.0.0",
+  "description": "Syncnu Golang Backend Server",
+  "main": "main.go",
+  "scripts": {
+    "dev": "go run .",
+    "start": "go run .",
+    "build": "go build -o dist/server.exe ."
+  },
+  "keywords": [
+    "golang",
+    "backend",
+    "syncnu"
+  ],
+  "author": "",
+  "license": "ISC"
+}
